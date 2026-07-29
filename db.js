@@ -75,6 +75,24 @@ CREATE TABLE IF NOT EXISTS identite_structure (
   updated_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS billetterie_vendeuses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nom TEXT NOT NULL,
+  telephone TEXT
+);
+
+CREATE TABLE IF NOT EXISTS billetterie_ventes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  vendeuse_id INTEGER NOT NULL,
+  prix_billet REAL NOT NULL,
+  billets_pris INTEGER NOT NULL DEFAULT 0,
+  billets_vendus INTEGER NOT NULL DEFAULT 0,
+  montant_verse REAL NOT NULL DEFAULT 0,
+  paiement_hotesse REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS journal_activite (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   utilisateur_id INTEGER,
