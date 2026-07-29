@@ -1,0 +1,13 @@
+{
+  "name": "diabycit-evens",
+  "version": "1.0.0",
+  "description": "Application de gestion DIABYCIT EVEN'S — ressources, bons de sortie, statistiques",
+  "main": "server.js",
+  "engines": { "node": ">=22.0.0" },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  }
+}
