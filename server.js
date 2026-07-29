@@ -5,7 +5,7 @@ const url = require('url');
 
 const { db, PDF_DIR } = require('./db');
 const { hashPassword, verifyPassword, createSession, getUserFromToken, destroySession, log } = require('./auth');
-const { genererBonDeSortie } = require('./pdfgen');
+const { genererBonDeSortie, genererRapportJournalierBilletterie } = require('./pdfgen');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -87,6 +87,7 @@ const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const pathname = parsed.pathname;
   const method = req.method;
+  let m;
 
   try {
     // ---------- ONBOARDING ----------
@@ -150,14 +151,66 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { user: publicUser(user) });
     }
 
+    if (pathname === '/api/auth/change-password' && method === 'POST') {
+      const user = requireAuth(req, res); if (!user) return;
+      const b = await readBody(req);
+      if (!b.currentPassword || !b.newPassword) return sendJSON(res, 400, { error: 'Champs manquants' });
+      if (!verifyPassword(b.currentPassword, user.password_salt, user.password_hash)) {
+        return sendJSON(res, 401, { error: 'Mot de passe actuel incorrect' });
+      }
+      if (b.newPassword.length < 6) return sendJSON(res, 400, { error: 'Le nouveau mot de passe doit contenir au moins 6 caractères' });
+      const { hash, salt } = hashPassword(b.newPassword);
+      db.prepare('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?').run(hash, salt, user.id);
+      log(user.id, 'mot_de_passe_change');
+      return sendJSON(res, 200, { ok: true });
+    }
+
     // ---------- GESTION DES UTILISATEURS (admin) ----------
+    if (pathname === '/api/users' && method === 'GET') {
+      const admin = requireAdmin(req, res); if (!admin) return;
+      const rows = db.prepare("SELECT * FROM users WHERE statut = 'actif' ORDER BY nom ASC").all();
+      return sendJSON(res, 200, { users: rows.map(publicUser) });
+    }
+
+    m = pathname.match(/^\/api\/users\/(\d+)\/role$/);
+    if (m && method === 'POST') {
+      const admin = requireAdmin(req, res); if (!admin) return;
+      if (admin.role !== 'super_admin') return sendJSON(res, 403, { error: 'Réservé au Super-Admin' });
+      const id = Number(m[1]);
+      const b = await readBody(req);
+      if (!['utilisateur', 'admin', 'super_admin'].includes(b.role)) return sendJSON(res, 400, { error: 'Rôle invalide' });
+      if (b.role !== 'super_admin') {
+        const target = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+        if (target && target.role === 'super_admin') {
+          const count = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'super_admin'").get().c;
+          if (count <= 1) return sendJSON(res, 400, { error: 'Impossible de retirer le dernier Super-Admin' });
+        }
+      }
+      db.prepare('UPDATE users SET role = ? WHERE id = ?').run(b.role, id);
+      log(admin.id, 'role_modifie', `${id}:${b.role}`);
+      return sendJSON(res, 200, { ok: true });
+    }
+
+    m = pathname.match(/^\/api\/users\/(\d+)\/reset-password$/);
+    if (m && method === 'POST') {
+      const admin = requireAdmin(req, res); if (!admin) return;
+      if (admin.role !== 'super_admin') return sendJSON(res, 403, { error: 'Réservé au Super-Admin' });
+      const id = Number(m[1]);
+      const b = await readBody(req);
+      if (!b.newPassword || b.newPassword.length < 6) return sendJSON(res, 400, { error: 'Le nouveau mot de passe doit contenir au moins 6 caractères' });
+      const { hash, salt } = hashPassword(b.newPassword);
+      db.prepare('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?').run(hash, salt, id);
+      log(admin.id, 'mot_de_passe_reinitialise', String(id));
+      return sendJSON(res, 200, { ok: true });
+    }
+
     if (pathname === '/api/users/pending' && method === 'GET') {
       const user = requireAdmin(req, res); if (!user) return;
       const rows = db.prepare("SELECT * FROM users WHERE statut = 'en_attente' ORDER BY created_at DESC").all();
       return sendJSON(res, 200, { users: rows.map(publicUser) });
     }
 
-    let m = pathname.match(/^\/api\/users\/(\d+)\/(approve|reject)$/);
+    m = pathname.match(/^\/api\/users\/(\d+)\/(approve|reject)$/);
     if (m && method === 'POST') {
       const admin = requireAdmin(req, res); if (!admin) return;
       const id = Number(m[1]);
@@ -289,6 +342,84 @@ const server = http.createServer(async (req, res) => {
       }
       log(user.id, 'identite_modifiee');
       return sendJSON(res, 200, { ok: true });
+    }
+
+    // ---------- BILLETTERIE ----------
+    if (pathname === '/api/billetterie/vendeuses' && method === 'GET') {
+      const user = requireAuth(req, res); if (!user) return;
+      const rows = db.prepare('SELECT * FROM billetterie_vendeuses ORDER BY nom ASC').all();
+      return sendJSON(res, 200, { vendeuses: rows });
+    }
+
+    if (pathname === '/api/billetterie/vendeuses' && method === 'POST') {
+      const user = requireAuth(req, res); if (!user) return;
+      const b = await readBody(req);
+      if (!b.nom) return sendJSON(res, 400, { error: 'Nom requis' });
+      const info = db.prepare('INSERT INTO billetterie_vendeuses (nom, telephone) VALUES (?, ?)').run(b.nom, b.telephone || '');
+      log(user.id, 'vendeuse_creee', b.nom);
+      return sendJSON(res, 201, { id: info.lastInsertRowid });
+    }
+
+    if (pathname === '/api/billetterie/ventes' && method === 'GET') {
+      const user = requireAuth(req, res); if (!user) return;
+      const q = parsed.query || {};
+      let rows;
+      if (q.date) {
+        rows = db.prepare(`SELECT v.*, s.nom as vendeuse_nom FROM billetterie_ventes v
+          JOIN billetterie_vendeuses s ON s.id = v.vendeuse_id WHERE v.date = ? ORDER BY v.id DESC`).all(q.date);
+      } else {
+        rows = db.prepare(`SELECT v.*, s.nom as vendeuse_nom FROM billetterie_ventes v
+          JOIN billetterie_vendeuses s ON s.id = v.vendeuse_id ORDER BY v.date DESC, v.id DESC LIMIT 200`).all();
+      }
+      return sendJSON(res, 200, { ventes: rows });
+    }
+
+    if (pathname === '/api/billetterie/ventes' && method === 'POST') {
+      const user = requireAuth(req, res); if (!user) return;
+      const b = await readBody(req);
+      if (!b.date || !b.vendeuse_id || !b.prix_billet) return sendJSON(res, 400, { error: 'Champs manquants' });
+      const prix = Number(b.prix_billet);
+      if (prix < 500 || prix > 10000) return sendJSON(res, 400, { error: 'Le prix du billet doit être entre 500 et 10000 FCFA' });
+      const pris = Number(b.billets_pris) || 0;
+      const vendus = Number(b.billets_vendus) || 0;
+      if (vendus > pris) return sendJSON(res, 400, { error: 'Le nombre de billets vendus dépasse le nombre pris' });
+      if (pris > 1000 || vendus > 1000) return sendJSON(res, 400, { error: 'Le nombre de billets doit être compris entre 0 et 1000' });
+      const info = db.prepare(`INSERT INTO billetterie_ventes (date, vendeuse_id, prix_billet, billets_pris, billets_vendus, montant_verse, paiement_hotesse, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(b.date, Number(b.vendeuse_id), prix, pris, vendus, Number(b.montant_verse) || 0, Number(b.paiement_hotesse) || 0, new Date().toISOString());
+      log(user.id, 'vente_billetterie_creee', String(info.lastInsertRowid));
+      return sendJSON(res, 201, { id: info.lastInsertRowid });
+    }
+
+    m = pathname.match(/^\/api\/billetterie\/ventes\/(\d+)$/);
+    if (m && method === 'PUT') {
+      const user = requireAuth(req, res); if (!user) return;
+      const id = Number(m[1]);
+      const b = await readBody(req);
+      const prix = Number(b.prix_billet);
+      const pris = Number(b.billets_pris) || 0;
+      const vendus = Number(b.billets_vendus) || 0;
+      if (vendus > pris) return sendJSON(res, 400, { error: 'Le nombre de billets vendus dépasse le nombre pris' });
+      db.prepare(`UPDATE billetterie_ventes SET prix_billet=?, billets_pris=?, billets_vendus=?, montant_verse=?, paiement_hotesse=? WHERE id=?`)
+        .run(prix, pris, vendus, Number(b.montant_verse) || 0, Number(b.paiement_hotesse) || 0, id);
+      log(user.id, 'vente_billetterie_modifiee', String(id));
+      return sendJSON(res, 200, { ok: true });
+    }
+
+    m = pathname.match(/^\/api\/billetterie\/rapport\/([\d-]+)\/pdf$/);
+    if (m && method === 'GET') {
+      let user = getAuthUser(req);
+      if (!user && parsed.query && parsed.query.token) user = getUserFromToken(parsed.query.token);
+      if (!user || user.statut !== 'actif') return sendJSON(res, 401, { error: 'Non authentifié' });
+      const date = m[1];
+      const lignes = db.prepare(`SELECT v.*, s.nom as vendeuse_nom FROM billetterie_ventes v
+        JOIN billetterie_vendeuses s ON s.id = v.vendeuse_id WHERE v.date = ? ORDER BY s.nom ASC`).all(date);
+      const identite = db.prepare('SELECT * FROM identite_structure WHERE id = 1').get();
+      const filename = await genererRapportJournalierBilletterie(date, lignes, identite);
+      const filePath = path.join(PDF_DIR, filename);
+      const data = fs.readFileSync(filePath);
+      res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="rapport-${date}.pdf"` });
+      return res.end(data);
     }
 
     // ---------- STATISTIQUES ----------
