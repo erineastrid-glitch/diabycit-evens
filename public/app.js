@@ -210,6 +210,8 @@ const NAV_ITEMS = [
   { id: 'dashboard', label: 'Tableau de bord' },
   { id: 'ressources', label: 'Ressources' },
   { id: 'bons', label: 'Bons de sortie' },
+  { id: 'billetterie', label: 'Billetterie' },
+  { id: 'mon-compte', label: 'Mon compte' },
   { id: 'utilisateurs', label: 'Utilisateurs', adminOnly: true },
   { id: 'parametres', label: 'Paramètres', adminOnly: true },
 ];
@@ -252,6 +254,8 @@ async function renderApp() {
   if (state.activeTab === 'dashboard') return renderDashboard(main);
   if (state.activeTab === 'ressources') return renderRessources(main);
   if (state.activeTab === 'bons') return renderBons(main);
+  if (state.activeTab === 'billetterie') return renderBilletterie(main);
+  if (state.activeTab === 'mon-compte') return renderMonCompte(main);
   if (state.activeTab === 'utilisateurs') return renderUtilisateurs(main);
   if (state.activeTab === 'parametres') return renderParametres(main);
 }
@@ -458,19 +462,168 @@ window.openPdf = function (ev, id) {
   return true;
 };
 
-// ---------------- UTILISATEURS (admin) ----------------
-async function renderUtilisateurs(main) {
-  main.innerHTML = `<h2>Utilisateurs en attente</h2><div class="empty-hint">Chargement…</div>`;
-  let users;
-  try { users = (await api('/api/users/pending')).users; } catch (e) { main.innerHTML = `<div class="error-msg">${e.message}</div>`; return; }
+// ---------------- BILLETTERIE ----------------
+async function renderBilletterie(main) {
+  main.innerHTML = `<h2>Billetterie</h2><div class="empty-hint">Chargement…</div>`;
+  const selectedDate = state.billetterieDate || new Date().toISOString().slice(0, 10);
+  let vendeuses, ventes;
+  try {
+    [vendeuses, ventes] = await Promise.all([
+      api('/api/billetterie/vendeuses'),
+      api('/api/billetterie/ventes?date=' + selectedDate),
+    ]);
+  } catch (e) { main.innerHTML = `<div class="error-msg">${e.message}</div>`; return; }
+  vendeuses = vendeuses.vendeuses; ventes = ventes.ventes;
+
+  let totalAttendu = 0, totalVerse = 0, totalHotesse = 0, totalNet = 0, totalRestants = 0;
+  ventes.forEach(v => {
+    const restants = v.billets_pris - v.billets_vendus;
+    const attendu = v.billets_vendus * v.prix_billet;
+    totalAttendu += attendu; totalVerse += v.montant_verse; totalHotesse += v.paiement_hotesse;
+    totalNet += (v.montant_verse - v.paiement_hotesse); totalRestants += restants;
+  });
 
   main.innerHTML = `
-    <h2>Utilisateurs en attente</h2>
+    <h2>Billetterie</h2>
+
     <div class="card">
+      <div class="card-title">Nouvelle vendeuse</div>
+      <div class="form-inline">
+        <div class="field"><label>Nom</label><input id="v-nom" placeholder="ex. Fatou Diabaté" /></div>
+        <div class="field"><label>Téléphone</label><input id="v-telephone" /></div>
+        <button class="btn btn-primary" id="add-vendeuse">Ajouter</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Saisie du jour</div>
+      <div class="form-inline">
+        <div class="field"><label>Date</label><input id="b-date" type="date" value="${selectedDate}" /></div>
+      </div>
+      <div class="form-inline">
+        <div class="field"><label>Vendeuse</label>
+          <select id="b-vendeuse">${vendeuses.map(v => `<option value="${v.id}">${v.nom}</option>`).join('') || '<option value="">Aucune vendeuse enregistrée</option>'}</select>
+        </div>
+        <div class="field"><label>Prix du billet (500 à 10000 FCFA)</label><input id="b-prix" type="number" min="500" max="10000" step="1" value="500" /></div>
+        <div class="field"><label>Billets pris (0 à 1000)</label><input id="b-pris" type="number" min="0" max="1000" value="0" /></div>
+        <div class="field"><label>Billets vendus</label><input id="b-vendus" type="number" min="0" max="1000" value="0" /></div>
+      </div>
+      <div class="form-inline">
+        <div class="field"><label>Montant versé (FCFA)</label><input id="b-verse" type="number" min="0" value="0" /></div>
+        <div class="field"><label>Paiement hôtesse (FCFA, déduit)</label><input id="b-hotesse" type="number" min="0" value="0" /></div>
+        <button class="btn btn-primary" id="add-vente">Enregistrer</button>
+      </div>
+      <div id="v-error"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Détail du ${selectedDate}</div>
+      <table>
+        <thead><tr><th>Vendeuse</th><th>Prix</th><th>Pris</th><th>Vendus</th><th>Restants</th><th>Attendu</th><th>Versé</th><th>Hôtesse</th><th>Net</th></tr></thead>
+        <tbody>
+          ${ventes.map(v => {
+            const restants = v.billets_pris - v.billets_vendus;
+            const attendu = v.billets_vendus * v.prix_billet;
+            const net = v.montant_verse - v.paiement_hotesse;
+            return `<tr>
+              <td>${v.vendeuse_nom}</td><td>${fmt(v.prix_billet)}</td><td>${v.billets_pris}</td><td>${v.billets_vendus}</td>
+              <td>${restants}</td><td>${fmt(attendu)}</td><td>${fmt(v.montant_verse)}</td><td>${fmt(v.paiement_hotesse)}</td><td>${fmt(net)}</td>
+            </tr>`;
+          }).join('') || `<tr><td colspan="9" class="empty-hint">Aucune saisie pour cette date</td></tr>`}
+        </tbody>
+        ${ventes.length ? `<tfoot><tr style="font-weight:700;">
+          <td colspan="4">Total</td><td>${totalRestants}</td><td>${fmt(totalAttendu)}</td><td>${fmt(totalVerse)}</td><td>${fmt(totalHotesse)}</td><td>${fmt(totalNet)}</td>
+        </tr></tfoot>` : ''}
+      </table>
+      <button class="btn btn-secondary" id="dl-rapport" style="margin-top:14px;">Télécharger le rapport journalier (PDF)</button>
+    </div>`;
+
+  document.getElementById('b-date').onchange = (e) => setState({ billetterieDate: e.target.value, activeTab: 'billetterie' });
+
+  document.getElementById('add-vendeuse').onclick = async () => {
+    const nom = document.getElementById('v-nom').value.trim();
+    if (!nom) return;
+    await api('/api/billetterie/vendeuses', { method: 'POST', body: { nom, telephone: document.getElementById('v-telephone').value.trim() } });
+    renderBilletterie(main);
+  };
+
+  document.getElementById('add-vente').onclick = async () => {
+    const body = {
+      date: document.getElementById('b-date').value,
+      vendeuse_id: document.getElementById('b-vendeuse').value,
+      prix_billet: document.getElementById('b-prix').value,
+      billets_pris: document.getElementById('b-pris').value,
+      billets_vendus: document.getElementById('b-vendus').value,
+      montant_verse: document.getElementById('b-verse').value,
+      paiement_hotesse: document.getElementById('b-hotesse').value,
+    };
+    if (!body.vendeuse_id) { document.getElementById('v-error').innerHTML = `<div class="error-msg">Merci d'ajouter d'abord une vendeuse.</div>`; return; }
+    try {
+      await api('/api/billetterie/ventes', { method: 'POST', body });
+      setState({ billetterieDate: body.date, activeTab: 'billetterie' });
+    } catch (e) {
+      document.getElementById('v-error').innerHTML = `<div class="error-msg">${e.message}</div>`;
+    }
+  };
+
+  document.getElementById('dl-rapport').onclick = () => {
+    window.open(`/api/billetterie/rapport/${selectedDate}/pdf?token=${state.token}`, '_blank');
+  };
+}
+
+// ---------------- MON COMPTE ----------------
+function renderMonCompte(main) {
+  main.innerHTML = `
+    <h2>Mon compte</h2>
+    <div class="card">
+      <div class="card-title">Informations</div>
+      <p>${state.user.prenom} ${state.user.nom} — ${state.user.email}</p>
+      <p style="color:var(--paper-dim);font-size:13px;">Rôle : ${state.user.role === 'super_admin' ? 'Super-Admin' : state.user.role === 'admin' ? 'Admin' : 'Utilisateur'}</p>
+    </div>
+    <div class="card">
+      <div class="card-title">Changer mon mot de passe</div>
+      <label>Mot de passe actuel</label><input id="cp-current" type="password" />
+      <label>Nouveau mot de passe</label><input id="cp-new" type="password" />
+      <label>Confirmer le nouveau mot de passe</label><input id="cp-confirm" type="password" />
+      <div class="btn-row"><button class="btn btn-primary" id="cp-submit">Mettre à jour</button></div>
+      <div id="cp-msg"></div>
+    </div>`;
+
+  document.getElementById('cp-submit').onclick = async () => {
+    const currentPassword = document.getElementById('cp-current').value;
+    const newPassword = document.getElementById('cp-new').value;
+    const confirm = document.getElementById('cp-confirm').value;
+    if (newPassword !== confirm) { document.getElementById('cp-msg').innerHTML = `<div class="error-msg">Les mots de passe ne correspondent pas.</div>`; return; }
+    try {
+      await api('/api/auth/change-password', { method: 'POST', body: { currentPassword, newPassword } });
+      document.getElementById('cp-msg').innerHTML = `<div class="success-msg">Mot de passe mis à jour.</div>`;
+      document.getElementById('cp-current').value = ''; document.getElementById('cp-new').value = ''; document.getElementById('cp-confirm').value = '';
+    } catch (e) {
+      document.getElementById('cp-msg').innerHTML = `<div class="error-msg">${e.message}</div>`;
+    }
+  };
+}
+
+// ---------------- UTILISATEURS (admin) ----------------
+async function renderUtilisateurs(main) {
+  main.innerHTML = `<h2>Utilisateurs</h2><div class="empty-hint">Chargement…</div>`;
+  const isSuperAdmin = state.user.role === 'super_admin';
+  let pending, actifs;
+  try {
+    [pending, actifs] = await Promise.all([api('/api/users/pending'), api('/api/users')]);
+  } catch (e) { main.innerHTML = `<div class="error-msg">${e.message}</div>`; return; }
+  pending = pending.users; actifs = actifs.users;
+
+  const roleLabel = r => r === 'super_admin' ? 'Super-Admin' : r === 'admin' ? 'Admin' : 'Utilisateur';
+
+  main.innerHTML = `
+    <h2>Utilisateurs</h2>
+    <div class="card">
+      <div class="card-title">Demandes en attente</div>
       <table>
         <thead><tr><th>Nom</th><th>Email</th><th>Téléphone</th><th>Statut</th><th>Action</th></tr></thead>
         <tbody>
-          ${users.map(u => `
+          ${pending.map(u => `
             <tr>
               <td>${u.prenom} ${u.nom}</td><td>${u.email}</td><td>${u.telephone || '-'}</td>
               <td><span class="tag tag-attente">En attente</span></td>
@@ -481,6 +634,28 @@ async function renderUtilisateurs(main) {
             </tr>`).join('') || `<tr><td colspan="5" class="empty-hint">Aucune demande en attente</td></tr>`}
         </tbody>
       </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Comptes actifs</div>
+      <table>
+        <thead><tr><th>Nom</th><th>Email</th><th>Rôle</th>${isSuperAdmin ? '<th>Actions</th>' : ''}</tr></thead>
+        <tbody>
+          ${actifs.map(u => `
+            <tr>
+              <td>${u.prenom} ${u.nom}</td><td>${u.email}</td>
+              <td>${isSuperAdmin ? `
+                <select class="role-select" data-id="${u.id}" ${u.id === state.user.id ? 'disabled title="Vous ne pouvez pas modifier votre propre rôle ici"' : ''}>
+                  <option value="utilisateur" ${u.role === 'utilisateur' ? 'selected' : ''}>Utilisateur</option>
+                  <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+                  <option value="super_admin" ${u.role === 'super_admin' ? 'selected' : ''}>Super-Admin</option>
+                </select>` : roleLabel(u.role)}
+              </td>
+              ${isSuperAdmin ? `<td><button class="btn btn-secondary reset-pw" data-id="${u.id}" data-name="${u.prenom} ${u.nom}" style="padding:6px 12px;">Réinitialiser le mot de passe</button></td>` : ''}
+            </tr>`).join('') || `<tr><td colspan="4" class="empty-hint">Aucun compte actif</td></tr>`}
+        </tbody>
+      </table>
+      <div id="u-msg"></div>
     </div>`;
 
   document.querySelectorAll('.approve, .reject').forEach(btn => {
@@ -489,6 +664,31 @@ async function renderUtilisateurs(main) {
       const action = btn.classList.contains('approve') ? 'approve' : 'reject';
       await api(`/api/users/${id}/${action}`, { method: 'POST' });
       renderUtilisateurs(main);
+    };
+  });
+
+  document.querySelectorAll('.role-select').forEach(sel => {
+    sel.onchange = async () => {
+      try {
+        await api(`/api/users/${sel.dataset.id}/role`, { method: 'POST', body: { role: sel.value } });
+        document.getElementById('u-msg').innerHTML = `<div class="success-msg">Rôle mis à jour.</div>`;
+      } catch (e) {
+        document.getElementById('u-msg').innerHTML = `<div class="error-msg">${e.message}</div>`;
+        renderUtilisateurs(main);
+      }
+    };
+  });
+
+  document.querySelectorAll('.reset-pw').forEach(btn => {
+    btn.onclick = async () => {
+      const newPassword = prompt(`Nouveau mot de passe pour ${btn.dataset.name} (6 caractères minimum) :`);
+      if (!newPassword) return;
+      try {
+        await api(`/api/users/${btn.dataset.id}/reset-password`, { method: 'POST', body: { newPassword } });
+        document.getElementById('u-msg').innerHTML = `<div class="success-msg">Mot de passe réinitialisé pour ${btn.dataset.name}.</div>`;
+      } catch (e) {
+        document.getElementById('u-msg').innerHTML = `<div class="error-msg">${e.message}</div>`;
+      }
     };
   });
 }
