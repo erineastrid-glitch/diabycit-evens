@@ -1,0 +1,14 @@
+{
+  "name": "DIABYCIT EVEN'S",
+  "short_name": "DIABYCIT",
+  "description": "Gestion des ressources, bons de sortie et statistiques de la structure",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#14181A",
+  "theme_color": "#14181A",
+  "orientation": "any",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
